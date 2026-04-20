@@ -10,6 +10,8 @@ servers:
 tags:
   - name: health
     description: Health operations
+  - name: subtitles
+    description: Subtitle processing operations
 paths:
   /healthz:
     get:
@@ -24,6 +26,18 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/HealthStatus"
+  /subtitles/status:
+    get:
+      operationId: getSubtitleStatus
+      tags: [subtitles]
+      summary: Get subtitle service status
+      responses:
+        "200":
+          description: Service ready
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SubtitleStatus"
 components:
   schemas:
     HealthStatus:
@@ -33,4 +47,13 @@ components:
           type: string
       required:
         - status
-
+    SubtitleStatus:
+      type: object
+      properties:
+        ready:
+          type: boolean
+        message:
+          type: string
+      required:
+        - ready
+        - message

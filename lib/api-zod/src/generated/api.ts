@@ -14,3 +14,11 @@ import * as zod from "zod";
 export const HealthCheckResponse = zod.object({
   status: zod.string(),
 });
+
+/**
+ * @summary Get subtitle service status
+ */
+export const GetSubtitleStatusResponse = zod.object({
+  ready: zod.boolean(),
+  message: zod.string(),
+});
