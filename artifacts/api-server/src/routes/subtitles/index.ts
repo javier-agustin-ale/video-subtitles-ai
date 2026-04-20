@@ -5,7 +5,6 @@ import { promisify } from "util";
 import fs from "fs/promises";
 import path from "path";
 import os from "os";
-import { Readable } from "stream";
 import { openai } from "@workspace/integrations-openai-ai-server";
 import { logger } from "../../lib/logger";
 
@@ -58,70 +57,86 @@ router.post(
     try {
       await fs.writeFile(inputPath, req.file.buffer);
 
+      // Get video duration via ffprobe
+      req.log.info("Getting video duration");
+      const { stdout: probeOutput } = await execAsync(
+        `ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "${inputPath}"`
+      );
+      const videoDuration = parseFloat(probeOutput.trim());
+      req.log.info({ videoDuration }, "Video duration obtained");
+
+      // Extract audio
       req.log.info({ language, color }, "Extracting audio from video");
       await execAsync(
         `ffmpeg -i "${inputPath}" -vn -acodec pcm_s16le -ar 16000 -ac 1 "${audioPath}" -y`
       );
 
       const audioBuffer = await fs.readFile(audioPath);
-      req.log.info({ size: audioBuffer.length }, "Transcribing audio with Whisper");
+      req.log.info({ size: audioBuffer.length }, "Transcribing audio");
 
+      // Use gpt-4o-mini-transcribe — only supports response_format: "json"
       const audioFile = new File([audioBuffer], "audio.wav", { type: "audio/wav" });
-
       const transcription = await openai.audio.transcriptions.create({
         file: audioFile,
-        model: "whisper-1",
+        model: "gpt-4o-mini-transcribe",
         language,
-        response_format: "verbose_json",
-        timestamp_granularities: ["segment"],
+        response_format: "json",
       });
 
-      req.log.info(
-        { segmentCount: transcription.segments?.length ?? 0 },
-        "Transcription complete"
-      );
+      const fullText = (transcription as { text: string }).text?.trim() ?? "";
+      req.log.info({ chars: fullText.length }, "Transcription complete");
 
-      const segments = transcription.segments ?? [];
-
-      if (segments.length === 0) {
-        req.log.warn("No speech detected — returning original video with empty subtitles");
+      if (!fullText) {
+        req.log.warn("No speech detected — returning original video");
         const originalBuffer = await fs.readFile(inputPath);
         res.setHeader("Content-Type", "video/mp4");
-        res.setHeader(
-          "Content-Disposition",
-          `attachment; filename="subtitled-video.mp4"`
-        );
+        res.setHeader("Content-Disposition", `attachment; filename="subtitled-video.mp4"`);
         res.send(originalBuffer);
         return;
       }
 
+      // Split into subtitle lines and estimate timing based on word position
+      const lines = splitIntoSubtitleLines(fullText, 7);
+      const totalWords = fullText.split(/\s+/).length;
+      // Assume speech fills ~85% of video duration (accounting for pauses etc.)
+      const speechDuration = videoDuration * 0.85;
+      const wordsPerSecond = totalWords / speechDuration;
+      // Estimate speech start offset (usually starts a bit into the video)
+      const speechStart = Math.min(videoDuration * 0.05, 2);
+
+      let wordOffset = 0;
+      const segments = lines.map((line, idx) => {
+        const wordCount = line.split(/\s+/).length;
+        const startTime = speechStart + wordOffset / wordsPerSecond;
+        const duration = Math.max(1.5, wordCount / wordsPerSecond);
+        const endTime = Math.min(startTime + duration, videoDuration - 0.1);
+        wordOffset += wordCount;
+        return { idx: idx + 1, start: startTime, end: endTime, text: line };
+      });
+
       const srtContent = segments
-        .map((seg: { start: number; end: number; text: string }, idx: number) => {
-          const start = formatSrtTime(seg.start);
-          const end = formatSrtTime(seg.end);
-          return `${idx + 1}\n${start} --> ${end}\n${seg.text.trim()}\n`;
-        })
+        .map((seg) => `${seg.idx}\n${formatSrtTime(seg.start)} --> ${formatSrtTime(seg.end)}\n${seg.text}\n`)
         .join("\n");
 
       await fs.writeFile(srtPath, srtContent, "utf-8");
-      req.log.info("SRT file written");
+      req.log.info({ lineCount: segments.length }, "SRT file written");
 
-      const fontColor = color === "yellow" ? "yellow" : "white";
-      const subtitleFilter = `subtitles='${srtPath.replace(/'/g, "\\'")}':force_style='Fontsize=20,PrimaryColour=&H00${colorToHex(fontColor)}&,OutlineColour=&H00000000&,BorderStyle=3,Outline=1,Shadow=0,MarginV=20'`;
+      // Burn subtitles using ffmpeg with ASS style
+      // ASS color format is ABGR: yellow = &H0000FFFF&, white = &H00FFFFFF&
+      const primaryColour = color === "yellow" ? "&H0000FFFF&" : "&H00FFFFFF&";
+      const subtitleFilter = `subtitles='${srtPath.replace(/\\/g, "\\\\").replace(/'/g, "\\'")}':force_style='Fontsize=22,PrimaryColour=${primaryColour},OutlineColour=&H00000000&,BorderStyle=3,Outline=2,Shadow=0,MarginV=25,Bold=1'`;
 
-      req.log.info("Burning subtitles into video with ffmpeg");
+      req.log.info("Burning subtitles into video");
       await execAsync(
-        `ffmpeg -i "${inputPath}" -vf "${subtitleFilter}" -c:v libx264 -crf 23 -preset fast -c:a copy "${outputPath}" -y`
+        `ffmpeg -i "${inputPath}" -vf "${subtitleFilter}" -c:v libx264 -crf 23 -preset fast -c:a copy "${outputPath}" -y`,
+        { maxBuffer: 1024 * 1024 * 50 }
       );
 
       const outputBuffer = await fs.readFile(outputPath);
       req.log.info({ size: outputBuffer.length }, "Subtitle burning complete");
 
       res.setHeader("Content-Type", "video/mp4");
-      res.setHeader(
-        "Content-Disposition",
-        `attachment; filename="subtitled-video.mp4"`
-      );
+      res.setHeader("Content-Disposition", `attachment; filename="subtitled-video.mp4"`);
       res.send(outputBuffer);
     } catch (err) {
       req.log.error({ err }, "Subtitle processing failed");
@@ -129,12 +144,32 @@ router.post(
         res.status(500).json({ error: "Failed to process video. Please try again." });
       }
     } finally {
-      fs.rm(tmpDir, { recursive: true, force: true }).catch((err) => {
-        logger.warn({ err, tmpDir }, "Failed to clean up temp directory");
+      fs.rm(tmpDir, { recursive: true, force: true }).catch((e) => {
+        logger.warn({ err: e, tmpDir }, "Failed to clean up temp directory");
       });
     }
   }
 );
+
+/**
+ * Split text into subtitle lines with at most `maxWords` words each.
+ * Tries to keep natural sentence breaks where possible.
+ */
+function splitIntoSubtitleLines(text: string, maxWords: number): string[] {
+  // Split on sentence boundaries first, then further chunk if needed
+  const sentences = text.match(/[^.!?]+[.!?]*/g) ?? [text];
+  const lines: string[] = [];
+
+  for (const sentence of sentences) {
+    const words = sentence.trim().split(/\s+/).filter(Boolean);
+    for (let i = 0; i < words.length; i += maxWords) {
+      const chunk = words.slice(i, i + maxWords).join(" ");
+      if (chunk) lines.push(chunk);
+    }
+  }
+
+  return lines;
+}
 
 function formatSrtTime(seconds: number): string {
   const h = Math.floor(seconds / 3600);
@@ -147,12 +182,5 @@ function formatSrtTime(seconds: number): string {
 function pad(n: number, len = 2): string {
   return String(n).padStart(len, "0");
 }
-
-function colorToHex(color: string): string {
-  if (color === "yellow") return "00FFFF";
-  return "FFFFFF";
-}
-
-
 
 export default router;
