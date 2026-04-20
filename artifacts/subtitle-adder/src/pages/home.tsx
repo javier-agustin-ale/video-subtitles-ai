@@ -1,5 +1,5 @@
 import React, { useState, useRef } from "react";
-import { Upload, Film, Settings2, Play, Download, FileVideo, ChevronLeft, Languages, Type, PanelBottom } from "lucide-react";
+import { Upload, Film, Zap, Play, Download, FileVideo, ChevronLeft, Languages, Type, PanelBottom } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "@/components/ui/card";
 import { Label } from "@/components/ui/label";
@@ -235,8 +235,8 @@ export default function Home() {
 
             <CardFooter>
               <Button onClick={handleProcess} className="w-full h-12 text-base font-semibold" size="lg">
-                <Settings2 className="w-5 h-5 mr-2" />
-                Render Subtitles
+                AI, Do the Thing
+                <Zap className="w-5 h-5 ml-2" />
               </Button>
             </CardFooter>
           </Card>
@@ -325,11 +325,11 @@ function OptionGroup({ icon, label, children }: { icon: React.ReactNode; label: 
 
 function OptionCard({ id, value, current, children }: { id: string; value: string; current: string; children: React.ReactNode }) {
   return (
-    <div className="flex-1">
+    <div className="flex-1 flex flex-col">
       <RadioGroupItem value={value} id={id} className="peer sr-only" />
       <Label
         htmlFor={id}
-        className="flex flex-col items-center justify-center p-3 border rounded-md cursor-pointer hover:bg-muted/30 peer-data-[state=checked]:border-primary peer-data-[state=checked]:bg-primary/5 transition-all text-center"
+        className="flex flex-col items-center justify-center p-3 border rounded-md cursor-pointer hover:bg-muted/30 peer-data-[state=checked]:border-primary peer-data-[state=checked]:bg-primary/5 transition-all text-center h-full min-h-[72px]"
       >
         {children}
       </Label>
