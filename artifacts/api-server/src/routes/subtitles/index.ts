@@ -12,14 +12,11 @@ const execAsync = promisify(exec);
 
 const router: IRouter = Router();
 
-const storage = multer.memoryStorage();
 const upload = multer({
-  storage,
-  limits: {
-    fileSize: 500 * 1024 * 1024,
-  },
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 500 * 1024 * 1024 },
   fileFilter: (_req, file, cb) => {
-    if (file.mimetype.startsWith("video/")) {
+    if (file.mimetype.startsWith("video/") || file.mimetype === "application/octet-stream") {
       cb(null, true);
     } else {
       cb(new Error("Only video files are allowed"));
@@ -40,8 +37,10 @@ router.post(
       return;
     }
 
-    const language = typeof req.body.language === "string" ? req.body.language : "en";
     const color = typeof req.body.color === "string" ? req.body.color : "white";
+    const background = typeof req.body.background === "string" ? req.body.background : "yes";
+    const size = typeof req.body.size === "string" ? req.body.size : "normal";
+    const translate = typeof req.body.translate === "string" ? req.body.translate : "original";
 
     if (color !== "white" && color !== "yellow") {
       res.status(400).json({ error: "Color must be 'white' or 'yellow'" });
@@ -58,7 +57,6 @@ router.post(
       await fs.writeFile(inputPath, req.file.buffer);
 
       // Get video duration via ffprobe
-      req.log.info("Getting video duration");
       const { stdout: probeOutput } = await execAsync(
         `ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "${inputPath}"`
       );
@@ -66,7 +64,7 @@ router.post(
       req.log.info({ videoDuration }, "Video duration obtained");
 
       // Extract audio
-      req.log.info({ language, color }, "Extracting audio from video");
+      req.log.info({ color, background, size, translate }, "Extracting audio from video");
       await execAsync(
         `ffmpeg -i "${inputPath}" -vn -acodec pcm_s16le -ar 16000 -ac 1 "${audioPath}" -y`
       );
@@ -74,16 +72,15 @@ router.post(
       const audioBuffer = await fs.readFile(audioPath);
       req.log.info({ size: audioBuffer.length }, "Transcribing audio");
 
-      // Use gpt-4o-mini-transcribe — only supports response_format: "json"
+      // Transcribe with gpt-4o-mini-transcribe (only 'json' format supported)
       const audioFile = new File([audioBuffer], "audio.wav", { type: "audio/wav" });
       const transcription = await openai.audio.transcriptions.create({
         file: audioFile,
         model: "gpt-4o-mini-transcribe",
-        language,
         response_format: "json",
       });
 
-      const fullText = (transcription as { text: string }).text?.trim() ?? "";
+      let fullText = (transcription as { text: string }).text?.trim() ?? "";
       req.log.info({ chars: fullText.length }, "Transcription complete");
 
       if (!fullText) {
@@ -95,13 +92,28 @@ router.post(
         return;
       }
 
-      // Split into subtitle lines and estimate timing based on word position
+      // If translation requested, use a chat model to translate to English
+      if (translate === "english") {
+        req.log.info("Translating transcript to English");
+        const translationResponse = await openai.chat.completions.create({
+          model: "gpt-5-mini",
+          messages: [
+            {
+              role: "system",
+              content: "You are a professional translator. Translate the given text to English. Output ONLY the translated text, nothing else. Keep the same line breaks and sentence structure as the original.",
+            },
+            { role: "user", content: fullText },
+          ],
+        });
+        fullText = translationResponse.choices[0]?.message?.content?.trim() ?? fullText;
+        req.log.info({ chars: fullText.length }, "Translation complete");
+      }
+
+      // Split into subtitle lines and estimate timing
       const lines = splitIntoSubtitleLines(fullText, 7);
       const totalWords = fullText.split(/\s+/).length;
-      // Assume speech fills ~85% of video duration (accounting for pauses etc.)
       const speechDuration = videoDuration * 0.85;
       const wordsPerSecond = totalWords / speechDuration;
-      // Estimate speech start offset (usually starts a bit into the video)
       const speechStart = Math.min(videoDuration * 0.05, 2);
 
       let wordOffset = 0;
@@ -121,12 +133,32 @@ router.post(
       await fs.writeFile(srtPath, srtContent, "utf-8");
       req.log.info({ lineCount: segments.length }, "SRT file written");
 
-      // Burn subtitles using ffmpeg with ASS style
-      // ASS color format is ABGR: yellow = &H0000FFFF&, white = &H00FFFFFF&
+      // Build ASS force_style from user options
+      // ASS color format: ABGR — yellow = &H0000FFFF&, white = &H00FFFFFF&
       const primaryColour = color === "yellow" ? "&H0000FFFF&" : "&H00FFFFFF&";
-      const subtitleFilter = `subtitles='${srtPath.replace(/\\/g, "\\\\").replace(/'/g, "\\'")}':force_style='Fontsize=22,PrimaryColour=${primaryColour},OutlineColour=&H00000000&,BorderStyle=3,Outline=2,Shadow=0,MarginV=25,Bold=1'`;
+      const fontSize = size === "large" ? 30 : 22;
 
-      req.log.info("Burning subtitles into video");
+      // BorderStyle 3 = opaque box (background), 1 = outline only (no background)
+      // When using background box, set BackColour to semi-transparent black
+      const borderStyle = background === "yes" ? 3 : 1;
+      const backColour = "&H80000000&";  // semi-transparent black
+      const outline = background === "yes" ? 0 : 2;
+
+      const forceStyle = [
+        `Fontsize=${fontSize}`,
+        `Bold=1`,
+        `PrimaryColour=${primaryColour}`,
+        `BackColour=${backColour}`,
+        `BorderStyle=${borderStyle}`,
+        `Outline=${outline}`,
+        `Shadow=0`,
+        `MarginV=25`,
+      ].join(",");
+
+      const escapedSrtPath = srtPath.replace(/\\/g, "\\\\").replace(/'/g, "\\'").replace(/:/g, "\\:");
+      const subtitleFilter = `subtitles='${escapedSrtPath}':force_style='${forceStyle}'`;
+
+      req.log.info({ subtitleFilter }, "Burning subtitles into video");
       await execAsync(
         `ffmpeg -i "${inputPath}" -vf "${subtitleFilter}" -c:v libx264 -crf 23 -preset fast -c:a copy "${outputPath}" -y`,
         { maxBuffer: 1024 * 1024 * 50 }
@@ -151,15 +183,9 @@ router.post(
   }
 );
 
-/**
- * Split text into subtitle lines with at most `maxWords` words each.
- * Tries to keep natural sentence breaks where possible.
- */
 function splitIntoSubtitleLines(text: string, maxWords: number): string[] {
-  // Split on sentence boundaries first, then further chunk if needed
   const sentences = text.match(/[^.!?]+[.!?]*/g) ?? [text];
   const lines: string[] = [];
-
   for (const sentence of sentences) {
     const words = sentence.trim().split(/\s+/).filter(Boolean);
     for (let i = 0; i < words.length; i += maxWords) {
@@ -167,7 +193,6 @@ function splitIntoSubtitleLines(text: string, maxWords: number): string[] {
       if (chunk) lines.push(chunk);
     }
   }
-
   return lines;
 }
 
