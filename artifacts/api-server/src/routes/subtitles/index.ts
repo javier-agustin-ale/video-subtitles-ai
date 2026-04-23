@@ -7,6 +7,7 @@ import path from "path";
 import os from "os";
 import { openai } from "@workspace/integrations-openai-ai-server";
 import { logger } from "../../lib/logger";
+import { ensureMediaToolsAvailable } from "../../lib/media-tools";
 
 const execAsync = promisify(exec);
 
@@ -54,6 +55,8 @@ router.post(
     const outputPath = path.join(tmpDir, "output.mp4");
 
     try {
+      await ensureMediaToolsAvailable();
+
       await fs.writeFile(inputPath, req.file.buffer);
 
       // Get video duration via ffprobe
@@ -173,7 +176,15 @@ router.post(
     } catch (err) {
       req.log.error({ err }, "Subtitle processing failed");
       if (!res.headersSent) {
-        res.status(500).json({ error: "Failed to process video. Please try again." });
+        const message = err instanceof Error ? err.message : "Failed to process video. Please try again.";
+
+        if (message.includes("[MISSING_MEDIA_TOOL]")) {
+          res.status(500).json({
+            error: "FFmpeg/ffprobe is not installed or not in PATH. Install FFmpeg and restart the API server.",
+          });
+        } else {
+          res.status(500).json({ error: "Failed to process video. Please try again." });
+        }
       }
     } finally {
       fs.rm(tmpDir, { recursive: true, force: true }).catch((e) => {

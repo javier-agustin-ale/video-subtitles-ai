@@ -69,3 +69,18 @@ npm run build
 - `artifacts/subtitle-adder`: React + Vite frontend
 - `artifacts/api-server`: Express API for subtitle generation
 - `lib/*`: shared libraries (API client, schemas, db, integrations)
+
+
+## Troubleshooting
+
+### `ffprobe: command not found` / `ffmpeg: command not found`
+
+This API requires FFmpeg tools (`ffmpeg` and `ffprobe`) available in your `PATH`.
+
+Install FFmpeg:
+
+- macOS (Homebrew): `brew install ffmpeg`
+- Ubuntu/Debian: `sudo apt update && sudo apt install -y ffmpeg`
+- Windows (winget): `winget install Gyan.FFmpeg`
+
+Then restart the API server.
