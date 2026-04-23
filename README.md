@@ -1,11 +1,34 @@
 ## 🎥 Video Subtitles AI
 
-Video Subtitles AI is a project built to take the pain out of creating subtitles for videos. Instead of manually transcribing and timing every line, this tool uses AI to automatically turn spoken audio into clean, time-synced subtitles.
+Video Subtitles AI helps you generate and burn subtitles into videos using AI speech-to-text.
 
-But it doesn’t stop there 👀 — the project also makes it easy to generate subtitles in English even if your original audio is in another language. So you’re not just getting subtitles, you’re getting built-in translation to help your content reach a wider audience.
+## Local development (npm)
 
-The goal is simple: make video content more accessible, searchable, and easier to share—without the usual tedious workflow. Think of it as your behind-the-scenes assistant that listens to your videos and writes (and translates) the subtitles for you.
+This repository is now configured as an **npm workspaces** monorepo.
 
-Under the hood, it leverages modern speech-to-text and AI processing techniques to deliver fast and increasingly accurate results, with plans to keep improving quality and adding new features over time.
+### Requirements
 
-🚧 This project is still a work in progress, so expect changes, experiments, and continuous improvements along the way.
+- Node.js 20+ (Node.js 24 recommended)
+- npm 10+
+- ffmpeg installed and available in PATH (for subtitle rendering)
+
+### Install
+
+```bash
+npm install
+```
+
+### Useful scripts
+
+```bash
+npm run typecheck
+npm run build
+npm run dev --workspace=@workspace/api-server
+npm run dev --workspace=@workspace/subtitle-adder
+```
+
+## Project structure
+
+- `artifacts/subtitle-adder`: React + Vite frontend
+- `artifacts/api-server`: Express API for subtitle generation
+- `lib/*`: shared libraries (API client, schemas, db, integrations)
