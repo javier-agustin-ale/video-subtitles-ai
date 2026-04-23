@@ -11,7 +11,7 @@ This repository is configured as an **npm workspaces** monorepo.
 - Node.js 20+ (Node.js 24 recommended)
 - npm 10+
 - ffmpeg installed and available in PATH (required for subtitle rendering)
-- OpenAI API key
+- Python 3 (for local transcription with faster-whisper)
 
 ### 1) Install dependencies
 
@@ -19,29 +19,37 @@ This repository is configured as an **npm workspaces** monorepo.
 npm install
 ```
 
-### 2) Configure environment variables
+### 2) Install local transcription runtime (faster-whisper)
 
-Set these before starting the API server:
+```bash
+pip install faster-whisper
+```
 
-- `AI_INTEGRATIONS_OPENAI_API_KEY` (your API key)
-- `AI_INTEGRATIONS_OPENAI_BASE_URL` (usually `https://api.openai.com/v1`)
-- Optional: `PORT` (API server port, defaults to `3000`)
+### 3) Configure environment variables
+
+Optional API server variables:
+
+- `PORT` (API server port, defaults to `3000`)
+- `PYTHON_BIN` (defaults to `python3`)
+- `FASTER_WHISPER_MODEL` (defaults to `base`)
+- `FASTER_WHISPER_DEVICE` (`auto`, `cpu`, or `cuda`; defaults to `auto`)
+- `FASTER_WHISPER_COMPUTE_TYPE` (defaults to `int8`)
 
 Example:
 
 ```bash
-export AI_INTEGRATIONS_OPENAI_API_KEY="your_key_here"
-export AI_INTEGRATIONS_OPENAI_BASE_URL="https://api.openai.com/v1"
 export PORT=3000
+export PYTHON_BIN=python3
+export FASTER_WHISPER_MODEL=base
 ```
 
-### 3) Start the API server
+### 4) Start the API server
 
 ```bash
 npm run dev --workspace=@workspace/api-server
 ```
 
-### 4) Start the frontend app
+### 5) Start the frontend app
 
 In a second terminal:
 
@@ -84,3 +92,6 @@ Install FFmpeg:
 - Windows (winget): `winget install Gyan.FFmpeg`
 
 Then restart the API server.
+
+
+> Note: **Translate to English** is currently disabled in the UI as a premium feature placeholder (coming soon).

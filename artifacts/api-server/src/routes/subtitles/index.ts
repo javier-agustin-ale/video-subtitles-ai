@@ -5,9 +5,9 @@ import { promisify } from "util";
 import fs from "fs/promises";
 import path from "path";
 import os from "os";
-import { openai } from "@workspace/integrations-openai-ai-server";
 import { logger } from "../../lib/logger";
 import { ensureMediaToolsAvailable } from "../../lib/media-tools";
+import { transcribeWithFasterWhisper } from "../../lib/transcription";
 
 const execAsync = promisify(exec);
 
@@ -43,6 +43,11 @@ router.post(
     const size = typeof req.body.size === "string" ? req.body.size : "normal";
     const translate = typeof req.body.translate === "string" ? req.body.translate : "original";
 
+    if (translate === "english") {
+      res.status(422).json({ error: "Translate to English is a premium feature and will be available soon." });
+      return;
+    }
+
     if (color !== "white" && color !== "yellow") {
       res.status(400).json({ error: "Color must be 'white' or 'yellow'" });
       return;
@@ -75,15 +80,7 @@ router.post(
       const audioBuffer = await fs.readFile(audioPath);
       req.log.info({ size: audioBuffer.length }, "Transcribing audio");
 
-      // Transcribe with gpt-4o-mini-transcribe (only 'json' format supported)
-      const audioFile = new File([audioBuffer], "audio.wav", { type: "audio/wav" });
-      const transcription = await openai.audio.transcriptions.create({
-        file: audioFile,
-        model: "gpt-4o-mini-transcribe",
-        response_format: "json",
-      });
-
-      let fullText = (transcription as { text: string }).text?.trim() ?? "";
+      let fullText = await transcribeWithFasterWhisper(audioPath);
       req.log.info({ chars: fullText.length }, "Transcription complete");
 
       if (!fullText) {
@@ -93,23 +90,6 @@ router.post(
         res.setHeader("Content-Disposition", `attachment; filename="subtitled-video.mp4"`);
         res.send(originalBuffer);
         return;
-      }
-
-      // If translation requested, use a chat model to translate to English
-      if (translate === "english") {
-        req.log.info("Translating transcript to English");
-        const translationResponse = await openai.chat.completions.create({
-          model: "gpt-5-mini",
-          messages: [
-            {
-              role: "system",
-              content: "You are a professional translator. Translate the given text to English. Output ONLY the translated text, nothing else. Keep the same line breaks and sentence structure as the original.",
-            },
-            { role: "user", content: fullText },
-          ],
-        });
-        fullText = translationResponse.choices[0]?.message?.content?.trim() ?? fullText;
-        req.log.info({ chars: fullText.length }, "Translation complete");
       }
 
       // Split into subtitle lines and estimate timing
