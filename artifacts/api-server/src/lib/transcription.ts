@@ -42,7 +42,7 @@ export async function transcribeWithFasterWhisper(audioPath: string): Promise<st
     return parsed.text?.trim() ?? "";
   } catch (err) {
     throw new Error(
-      `Local transcription failed. Ensure faster-whisper is installed (pip install faster-whisper) and PYTHON_BIN is correct. ${(err as Error).message}`,
+      `Local transcription failed. Ensure faster-whisper is installed (python3 -m pip install faster-whisper) and PYTHON_BIN is correct. ${(err as Error).message}`,
     );
   }
 }

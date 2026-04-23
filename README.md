@@ -22,7 +22,7 @@ npm install
 ### 2) Install local transcription runtime (faster-whisper)
 
 ```bash
-pip install faster-whisper
+python3 -m pip install faster-whisper
 ```
 
 ### 3) Configure environment variables
