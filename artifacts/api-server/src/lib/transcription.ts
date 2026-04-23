@@ -30,6 +30,48 @@ function getTranscriptionScriptPath(): string {
   return match;
 }
 
+function isMissingFasterWhisperError(message: string): boolean {
+  return message.includes("No module named 'faster_whisper'");
+}
+
+async function runTranscriptionCommand(
+  python: string,
+  scriptPath: string,
+  audioPath: string,
+  model: string,
+  device: string,
+  computeType: string,
+  beamSize: string,
+): Promise<string> {
+  const { stdout } = await execFileAsync(
+    python,
+    [
+      scriptPath,
+      audioPath,
+      "--model",
+      model,
+      "--device",
+      device,
+      "--compute_type",
+      computeType,
+      "--beam_size",
+      beamSize,
+    ],
+    { maxBuffer: 1024 * 1024 * 20 },
+  );
+
+  const parsed = JSON.parse(stdout) as TranscriptionOutput;
+  return parsed.text?.trim() ?? "";
+}
+
+async function attemptAutoInstall(python: string): Promise<void> {
+  await execFileAsync(
+    python,
+    ["-m", "pip", "install", "faster-whisper"],
+    { maxBuffer: 1024 * 1024 * 20 },
+  );
+}
+
 export async function transcribeWithFasterWhisper(audioPath: string): Promise<string> {
   const python = process.env.PYTHON_BIN ?? "python3";
   const scriptPath = getTranscriptionScriptPath();
@@ -38,27 +80,10 @@ export async function transcribeWithFasterWhisper(audioPath: string): Promise<st
   const device = process.env.FASTER_WHISPER_DEVICE ?? "auto";
   const computeType = process.env.FASTER_WHISPER_COMPUTE_TYPE ?? "int8";
   const beamSize = process.env.FASTER_WHISPER_BEAM_SIZE ?? "5";
+  const autoInstall = process.env.FASTER_WHISPER_AUTO_INSTALL !== "false";
 
   try {
-    const { stdout } = await execFileAsync(
-      python,
-      [
-        scriptPath,
-        audioPath,
-        "--model",
-        model,
-        "--device",
-        device,
-        "--compute_type",
-        computeType,
-        "--beam_size",
-        beamSize,
-      ],
-      { maxBuffer: 1024 * 1024 * 20 },
-    );
-
-    const parsed = JSON.parse(stdout) as TranscriptionOutput;
-    return parsed.text?.trim() ?? "";
+    return await runTranscriptionCommand(python, scriptPath, audioPath, model, device, computeType, beamSize);
   } catch (err) {
     const message = (err as Error).message;
 
