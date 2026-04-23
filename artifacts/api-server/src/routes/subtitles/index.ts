@@ -162,6 +162,10 @@ router.post(
           res.status(500).json({
             error: "FFmpeg/ffprobe is not installed or not in PATH. Install FFmpeg and restart the API server.",
           });
+        } else if (message.includes("[MISSING_FASTER_WHISPER]")) {
+          res.status(500).json({
+            error: message.replace("[MISSING_FASTER_WHISPER] ", ""),
+          });
         } else {
           res.status(500).json({ error: "Failed to process video. Please try again." });
         }
