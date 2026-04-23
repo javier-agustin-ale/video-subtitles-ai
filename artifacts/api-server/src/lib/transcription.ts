@@ -1,14 +1,33 @@
 import { execFile } from "child_process";
+import { existsSync } from "fs";
 import { promisify } from "util";
-import { fileURLToPath } from "url";
+import path from "path";
 
 type TranscriptionOutput = { text?: string };
 
 const execFileAsync = promisify(execFile);
 
 function getTranscriptionScriptPath(): string {
-  // Resolve relative to this module file so it works both from src/* and dist/* builds.
-  return fileURLToPath(new URL("../../scripts/transcribe_faster_whisper.py", import.meta.url));
+  const scriptName = "transcribe_faster_whisper.py";
+
+  const candidates = [
+    // Typical when running `npm run ... --workspace=@workspace/api-server`
+    path.resolve(process.cwd(), "scripts", scriptName),
+    // Fallback when running from monorepo root
+    path.resolve(process.cwd(), "artifacts", "api-server", "scripts", scriptName),
+    // Fallback for source-mode execution
+    path.resolve(import.meta.dirname, "..", "..", "scripts", scriptName),
+  ];
+
+  const match = candidates.find((candidate) => existsSync(candidate));
+
+  if (!match) {
+    throw new Error(
+      `Could not locate ${scriptName}. Checked:\n${candidates.map((c) => `- ${c}`).join("\n")}`,
+    );
+  }
+
+  return match;
 }
 
 export async function transcribeWithFasterWhisper(audioPath: string): Promise<string> {
