@@ -1,14 +1,19 @@
 import { execFile } from "child_process";
 import { promisify } from "util";
-import path from "path";
-
-const execFileAsync = promisify(execFile);
+import { fileURLToPath } from "url";
 
 type TranscriptionOutput = { text?: string };
 
+const execFileAsync = promisify(execFile);
+
+function getTranscriptionScriptPath(): string {
+  // Resolve relative to this module file so it works both from src/* and dist/* builds.
+  return fileURLToPath(new URL("../../scripts/transcribe_faster_whisper.py", import.meta.url));
+}
+
 export async function transcribeWithFasterWhisper(audioPath: string): Promise<string> {
   const python = process.env.PYTHON_BIN ?? "python3";
-  const scriptPath = path.resolve(import.meta.dirname, "..", "..", "scripts", "transcribe_faster_whisper.py");
+  const scriptPath = getTranscriptionScriptPath();
 
   const model = process.env.FASTER_WHISPER_MODEL ?? "base";
   const device = process.env.FASTER_WHISPER_DEVICE ?? "auto";
