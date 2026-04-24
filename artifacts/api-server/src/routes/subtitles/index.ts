@@ -210,6 +210,75 @@ router.post(
   }
 );
 
+
+async function burnSubtitlesWithFallback(
+  inputPath: string,
+  subtitleFilter: string,
+  srtPath: string,
+  outputPath: string,
+  log: { info: (obj: unknown, msg: string) => void; warn: (obj: unknown, msg: string) => void },
+): Promise<void> {
+  try {
+    await execFileAsync(
+      "ffmpeg",
+      [
+        "-i",
+        inputPath,
+        "-vf",
+        subtitleFilter,
+        "-c:v",
+        "libx264",
+        "-crf",
+        "23",
+        "-preset",
+        "fast",
+        "-c:a",
+        "copy",
+        outputPath,
+        "-y",
+      ],
+      { maxBuffer: 1024 * 1024 * 50 },
+    );
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+
+    if (!message.includes("No such filter: 'subtitles'")) {
+      throw err;
+    }
+
+    log.warn(
+      { message },
+      "FFmpeg build does not include the subtitles filter. Falling back to embedding subtitles track (mov_text).",
+    );
+
+    await execFileAsync(
+      "ffmpeg",
+      [
+        "-i",
+        inputPath,
+        "-i",
+        srtPath,
+        "-map",
+        "0",
+        "-map",
+        "1:0",
+        "-c",
+        "copy",
+        "-c:s",
+        "mov_text",
+        outputPath,
+        "-y",
+      ],
+      { maxBuffer: 1024 * 1024 * 50 },
+    );
+
+    log.info(
+      {},
+      "Subtitles were embedded as a selectable track because burn-in filter is unavailable in the current FFmpeg build.",
+    );
+  }
+}
+
 function splitIntoSubtitleLines(text: string, maxWords: number): string[] {
   const sentences = text.match(/[^.!?]+[.!?]*/g) ?? [text];
   const lines: string[] = [];
