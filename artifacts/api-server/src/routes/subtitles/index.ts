@@ -1,6 +1,6 @@
 import { Router, type IRouter } from "express";
 import multer from "multer";
-import { exec } from "child_process";
+import { execFile } from "child_process";
 import { promisify } from "util";
 import fs from "fs/promises";
 import path from "path";
@@ -9,7 +9,8 @@ import { logger } from "../../lib/logger";
 import { ensureMediaToolsAvailable } from "../../lib/media-tools";
 import { transcribeWithFasterWhisper } from "../../lib/transcription";
 
-const execAsync = promisify(exec);
+const execFileAsync = promisify(execFile);
+let subtitlesFilterAvailableCache: boolean | null = null;
 
 const router: IRouter = Router();
 
@@ -65,17 +66,33 @@ router.post(
       await fs.writeFile(inputPath, req.file.buffer);
 
       // Get video duration via ffprobe
-      const { stdout: probeOutput } = await execAsync(
-        `ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "${inputPath}"`
-      );
+      const { stdout: probeOutput } = await execFileAsync("ffprobe", [
+        "-v",
+        "error",
+        "-show_entries",
+        "format=duration",
+        "-of",
+        "default=noprint_wrappers=1:nokey=1",
+        inputPath,
+      ]);
       const videoDuration = parseFloat(probeOutput.trim());
       req.log.info({ videoDuration }, "Video duration obtained");
 
       // Extract audio
       req.log.info({ color, background, size, translate }, "Extracting audio from video");
-      await execAsync(
-        `ffmpeg -i "${inputPath}" -vn -acodec pcm_s16le -ar 16000 -ac 1 "${audioPath}" -y`
-      );
+      await execFileAsync("ffmpeg", [
+        "-i",
+        inputPath,
+        "-vn",
+        "-acodec",
+        "pcm_s16le",
+        "-ar",
+        "16000",
+        "-ac",
+        "1",
+        audioPath,
+        "-y",
+      ]);
 
       const audioBuffer = await fs.readFile(audioPath);
       req.log.info({ size: audioBuffer.length }, "Transcribing audio");
@@ -139,13 +156,10 @@ router.post(
       ].join(",");
 
       const escapedSrtPath = srtPath.replace(/\\/g, "\\\\").replace(/'/g, "\\'").replace(/:/g, "\\:");
-      const subtitleFilter = `subtitles='${escapedSrtPath}':force_style='${forceStyle}'`;
+      const subtitleFilter = `subtitles=filename='${escapedSrtPath}':force_style='${forceStyle}'`;
 
       req.log.info({ subtitleFilter }, "Burning subtitles into video");
-      await execAsync(
-        `ffmpeg -i "${inputPath}" -vf "${subtitleFilter}" -c:v libx264 -crf 23 -preset fast -c:a copy "${outputPath}" -y`,
-        { maxBuffer: 1024 * 1024 * 50 }
-      );
+      await burnSubtitlesWithFallback(inputPath, subtitleFilter, srtPath, outputPath, req.log);
 
       const outputBuffer = await fs.readFile(outputPath);
       req.log.info({ size: outputBuffer.length }, "Subtitle burning complete");
@@ -162,6 +176,10 @@ router.post(
           res.status(500).json({
             error: "FFmpeg/ffprobe is not installed or not in PATH. Install FFmpeg and restart the API server.",
           });
+        } else if (message.includes("[MISSING_FASTER_WHISPER]")) {
+          res.status(503).json({
+            error: message.replace("[MISSING_FASTER_WHISPER] ", ""),
+          });
         } else {
           res.status(500).json({ error: "Failed to process video. Please try again." });
         }
@@ -173,6 +191,107 @@ router.post(
     }
   }
 );
+
+
+async function isSubtitlesFilterAvailable(log: { warn: (obj: unknown, msg: string) => void }): Promise<boolean> {
+  if (subtitlesFilterAvailableCache !== null) return subtitlesFilterAvailableCache;
+
+  try {
+    const { stdout } = await execFileAsync("ffmpeg", ["-hide_banner", "-filters"]);
+    subtitlesFilterAvailableCache = /\bsubtitles\b/i.test(stdout);
+    return subtitlesFilterAvailableCache;
+  } catch (err) {
+    log.warn({ err }, "Failed to detect ffmpeg filters. Assuming subtitles filter is unavailable.");
+    subtitlesFilterAvailableCache = false;
+    return subtitlesFilterAvailableCache;
+  }
+}
+
+function isMissingSubtitlesFilterError(err: unknown): boolean {
+  const message = err instanceof Error ? err.message : String(err);
+  const stderr = typeof err === "object" && err !== null && "stderr" in err ? String((err as { stderr?: unknown }).stderr ?? "") : "";
+  const combined = `${message}
+${stderr}`;
+  return /no such filter:\s*'?(subtitles)'?/i.test(combined);
+}
+
+async function muxSubtitlesTrack(inputPath: string, srtPath: string, outputPath: string): Promise<void> {
+  await execFileAsync(
+    "ffmpeg",
+    [
+      "-i",
+      inputPath,
+      "-i",
+      srtPath,
+      "-map",
+      "0",
+      "-map",
+      "1:0",
+      "-c",
+      "copy",
+      "-c:s",
+      "mov_text",
+      outputPath,
+      "-y",
+    ],
+    { maxBuffer: 1024 * 1024 * 50 },
+  );
+}
+
+async function burnSubtitlesWithFallback(
+  inputPath: string,
+  subtitleFilter: string,
+  srtPath: string,
+  outputPath: string,
+  log: { info: (obj: unknown, msg: string) => void; warn: (obj: unknown, msg: string) => void },
+): Promise<void> {
+  const canBurn = await isSubtitlesFilterAvailable(log);
+
+  if (!canBurn) {
+    log.warn(
+      {},
+      "FFmpeg build does not include the subtitles filter. Embedding subtitles track (mov_text) instead.",
+    );
+    await muxSubtitlesTrack(inputPath, srtPath, outputPath);
+    log.info({}, "Subtitles embedded as selectable track (mov_text).");
+    return;
+  }
+
+  try {
+    await execFileAsync(
+      "ffmpeg",
+      [
+        "-i",
+        inputPath,
+        "-vf",
+        subtitleFilter,
+        "-c:v",
+        "libx264",
+        "-crf",
+        "23",
+        "-preset",
+        "fast",
+        "-c:a",
+        "copy",
+        outputPath,
+        "-y",
+      ],
+      { maxBuffer: 1024 * 1024 * 50 },
+    );
+  } catch (err) {
+    if (!isMissingSubtitlesFilterError(err)) {
+      throw err;
+    }
+
+    subtitlesFilterAvailableCache = false;
+    log.warn(
+      { err },
+      "Subtitles filter became unavailable at runtime. Falling back to embedded subtitle track (mov_text).",
+    );
+    await muxSubtitlesTrack(inputPath, srtPath, outputPath);
+    log.info({}, "Subtitles embedded as selectable track (mov_text).");
+  }
+}
 
 function splitIntoSubtitleLines(text: string, maxWords: number): string[] {
   const sentences = text.match(/[^.!?]+[.!?]*/g) ?? [text];
