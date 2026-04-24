@@ -10,7 +10,6 @@ import { ensureMediaToolsAvailable } from "../../lib/media-tools";
 import { transcribeWithFasterWhisper } from "../../lib/transcription";
 
 const execFileAsync = promisify(execFile);
-let subtitlesFilterAvailableCache: boolean | null = null;
 
 const router: IRouter = Router();
 
@@ -159,7 +158,26 @@ router.post(
       const subtitleFilter = `subtitles=filename='${escapedSrtPath}':force_style='${forceStyle}'`;
 
       req.log.info({ subtitleFilter }, "Burning subtitles into video");
-      await burnSubtitlesWithFallback(inputPath, subtitleFilter, srtPath, outputPath, req.log);
+      await execFileAsync(
+        "ffmpeg",
+        [
+          "-i",
+          inputPath,
+          "-vf",
+          subtitleFilter,
+          "-c:v",
+          "libx264",
+          "-crf",
+          "23",
+          "-preset",
+          "fast",
+          "-c:a",
+          "copy",
+          outputPath,
+          "-y",
+        ],
+        { maxBuffer: 1024 * 1024 * 50 },
+      );
 
       const outputBuffer = await fs.readFile(outputPath);
       req.log.info({ size: outputBuffer.length }, "Subtitle burning complete");
@@ -177,7 +195,7 @@ router.post(
             error: "FFmpeg/ffprobe is not installed or not in PATH. Install FFmpeg and restart the API server.",
           });
         } else if (message.includes("[MISSING_FASTER_WHISPER]")) {
-          res.status(503).json({
+          res.status(500).json({
             error: message.replace("[MISSING_FASTER_WHISPER] ", ""),
           });
         } else {
@@ -193,51 +211,6 @@ router.post(
 );
 
 
-async function isSubtitlesFilterAvailable(log: { warn: (obj: unknown, msg: string) => void }): Promise<boolean> {
-  if (subtitlesFilterAvailableCache !== null) return subtitlesFilterAvailableCache;
-
-  try {
-    const { stdout } = await execFileAsync("ffmpeg", ["-hide_banner", "-filters"]);
-    subtitlesFilterAvailableCache = /\bsubtitles\b/i.test(stdout);
-    return subtitlesFilterAvailableCache;
-  } catch (err) {
-    log.warn({ err }, "Failed to detect ffmpeg filters. Assuming subtitles filter is unavailable.");
-    subtitlesFilterAvailableCache = false;
-    return subtitlesFilterAvailableCache;
-  }
-}
-
-function isMissingSubtitlesFilterError(err: unknown): boolean {
-  const message = err instanceof Error ? err.message : String(err);
-  const stderr = typeof err === "object" && err !== null && "stderr" in err ? String((err as { stderr?: unknown }).stderr ?? "") : "";
-  const combined = `${message}
-${stderr}`;
-  return /no such filter:\s*'?(subtitles)'?/i.test(combined);
-}
-
-async function muxSubtitlesTrack(inputPath: string, srtPath: string, outputPath: string): Promise<void> {
-  await execFileAsync(
-    "ffmpeg",
-    [
-      "-i",
-      inputPath,
-      "-i",
-      srtPath,
-      "-map",
-      "0",
-      "-map",
-      "1:0",
-      "-c",
-      "copy",
-      "-c:s",
-      "mov_text",
-      outputPath,
-      "-y",
-    ],
-    { maxBuffer: 1024 * 1024 * 50 },
-  );
-}
-
 async function burnSubtitlesWithFallback(
   inputPath: string,
   subtitleFilter: string,
@@ -245,18 +218,6 @@ async function burnSubtitlesWithFallback(
   outputPath: string,
   log: { info: (obj: unknown, msg: string) => void; warn: (obj: unknown, msg: string) => void },
 ): Promise<void> {
-  const canBurn = await isSubtitlesFilterAvailable(log);
-
-  if (!canBurn) {
-    log.warn(
-      {},
-      "FFmpeg build does not include the subtitles filter. Embedding subtitles track (mov_text) instead.",
-    );
-    await muxSubtitlesTrack(inputPath, srtPath, outputPath);
-    log.info({}, "Subtitles embedded as selectable track (mov_text).");
-    return;
-  }
-
   try {
     await execFileAsync(
       "ffmpeg",
@@ -279,17 +240,42 @@ async function burnSubtitlesWithFallback(
       { maxBuffer: 1024 * 1024 * 50 },
     );
   } catch (err) {
-    if (!isMissingSubtitlesFilterError(err)) {
+    const message = err instanceof Error ? err.message : String(err);
+
+    if (!message.includes("No such filter: 'subtitles'")) {
       throw err;
     }
 
-    subtitlesFilterAvailableCache = false;
     log.warn(
-      { err },
-      "Subtitles filter became unavailable at runtime. Falling back to embedded subtitle track (mov_text).",
+      { message },
+      "FFmpeg build does not include the subtitles filter. Falling back to embedding subtitles track (mov_text).",
     );
-    await muxSubtitlesTrack(inputPath, srtPath, outputPath);
-    log.info({}, "Subtitles embedded as selectable track (mov_text).");
+
+    await execFileAsync(
+      "ffmpeg",
+      [
+        "-i",
+        inputPath,
+        "-i",
+        srtPath,
+        "-map",
+        "0",
+        "-map",
+        "1:0",
+        "-c",
+        "copy",
+        "-c:s",
+        "mov_text",
+        outputPath,
+        "-y",
+      ],
+      { maxBuffer: 1024 * 1024 * 50 },
+    );
+
+    log.info(
+      {},
+      "Subtitles were embedded as a selectable track because burn-in filter is unavailable in the current FFmpeg build.",
+    );
   }
 }
 
