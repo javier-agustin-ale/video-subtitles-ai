@@ -87,25 +87,14 @@ export async function transcribeWithFasterWhisper(audioPath: string): Promise<st
   } catch (err) {
     const message = (err as Error).message;
 
-    if (!isMissingFasterWhisperError(message)) {
-      throw new Error(
-        `Local transcription failed. Ensure faster-whisper is installed (${python} -m pip install faster-whisper) and PYTHON_BIN is correct. ${message}`,
-      );
-    }
-
-    if (!autoInstall) {
+    if (message.includes("No module named 'faster_whisper'")) {
       throw new Error(
         `[MISSING_FASTER_WHISPER] Local transcription failed because the Python module "faster_whisper" is not installed for ${python}. Install it with: ${python} -m pip install faster-whisper`,
       );
     }
 
-    try {
-      await attemptAutoInstall(python);
-      return await runTranscriptionCommand(python, scriptPath, audioPath, model, device, computeType, beamSize);
-    } catch (installErr) {
-      throw new Error(
-        `[MISSING_FASTER_WHISPER] Local transcription failed because "faster_whisper" is unavailable for ${python}. Tried auto-install (${python} -m pip install faster-whisper) but it failed. ${(installErr as Error).message}`,
-      );
-    }
+    throw new Error(
+      `Local transcription failed. Ensure faster-whisper is installed (${python} -m pip install faster-whisper) and PYTHON_BIN is correct. ${message}`,
+    );
   }
 }
