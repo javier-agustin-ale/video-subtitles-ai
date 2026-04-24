@@ -158,7 +158,26 @@ router.post(
       const subtitleFilter = `subtitles=filename='${escapedSrtPath}':force_style='${forceStyle}'`;
 
       req.log.info({ subtitleFilter }, "Burning subtitles into video");
-      await burnSubtitlesWithFallback(inputPath, subtitleFilter, srtPath, outputPath, req.log);
+      await execFileAsync(
+        "ffmpeg",
+        [
+          "-i",
+          inputPath,
+          "-vf",
+          subtitleFilter,
+          "-c:v",
+          "libx264",
+          "-crf",
+          "23",
+          "-preset",
+          "fast",
+          "-c:a",
+          "copy",
+          outputPath,
+          "-y",
+        ],
+        { maxBuffer: 1024 * 1024 * 50 },
+      );
 
       const outputBuffer = await fs.readFile(outputPath);
       req.log.info({ size: outputBuffer.length }, "Subtitle burning complete");
@@ -176,7 +195,7 @@ router.post(
             error: "FFmpeg/ffprobe is not installed or not in PATH. Install FFmpeg and restart the API server.",
           });
         } else if (message.includes("[MISSING_FASTER_WHISPER]")) {
-          res.status(503).json({
+          res.status(500).json({
             error: message.replace("[MISSING_FASTER_WHISPER] ", ""),
           });
         } else {
