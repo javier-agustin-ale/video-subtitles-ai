@@ -1,14 +1,15 @@
 import { Router, type IRouter } from "express";
 import multer from "multer";
-import { exec } from "child_process";
+import { execFile } from "child_process";
 import { promisify } from "util";
 import fs from "fs/promises";
 import path from "path";
 import os from "os";
-import { openai } from "@workspace/integrations-openai-ai-server";
 import { logger } from "../../lib/logger";
+import { ensureMediaToolsAvailable } from "../../lib/media-tools";
+import { transcribeWithFasterWhisper } from "../../lib/transcription";
 
-const execAsync = promisify(exec);
+const execFileAsync = promisify(execFile);
 
 const router: IRouter = Router();
 
@@ -42,6 +43,11 @@ router.post(
     const size = typeof req.body.size === "string" ? req.body.size : "normal";
     const translate = typeof req.body.translate === "string" ? req.body.translate : "original";
 
+    if (translate === "english") {
+      res.status(422).json({ error: "Translate to English is a premium feature and will be available soon." });
+      return;
+    }
+
     if (color !== "white" && color !== "yellow") {
       res.status(400).json({ error: "Color must be 'white' or 'yellow'" });
       return;
@@ -54,33 +60,43 @@ router.post(
     const outputPath = path.join(tmpDir, "output.mp4");
 
     try {
+      await ensureMediaToolsAvailable();
+
       await fs.writeFile(inputPath, req.file.buffer);
 
       // Get video duration via ffprobe
-      const { stdout: probeOutput } = await execAsync(
-        `ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "${inputPath}"`
-      );
+      const { stdout: probeOutput } = await execFileAsync("ffprobe", [
+        "-v",
+        "error",
+        "-show_entries",
+        "format=duration",
+        "-of",
+        "default=noprint_wrappers=1:nokey=1",
+        inputPath,
+      ]);
       const videoDuration = parseFloat(probeOutput.trim());
       req.log.info({ videoDuration }, "Video duration obtained");
 
       // Extract audio
       req.log.info({ color, background, size, translate }, "Extracting audio from video");
-      await execAsync(
-        `ffmpeg -i "${inputPath}" -vn -acodec pcm_s16le -ar 16000 -ac 1 "${audioPath}" -y`
-      );
+      await execFileAsync("ffmpeg", [
+        "-i",
+        inputPath,
+        "-vn",
+        "-acodec",
+        "pcm_s16le",
+        "-ar",
+        "16000",
+        "-ac",
+        "1",
+        audioPath,
+        "-y",
+      ]);
 
       const audioBuffer = await fs.readFile(audioPath);
       req.log.info({ size: audioBuffer.length }, "Transcribing audio");
 
-      // Transcribe with gpt-4o-mini-transcribe (only 'json' format supported)
-      const audioFile = new File([audioBuffer], "audio.wav", { type: "audio/wav" });
-      const transcription = await openai.audio.transcriptions.create({
-        file: audioFile,
-        model: "gpt-4o-mini-transcribe",
-        response_format: "json",
-      });
-
-      let fullText = (transcription as { text: string }).text?.trim() ?? "";
+      let fullText = await transcribeWithFasterWhisper(audioPath);
       req.log.info({ chars: fullText.length }, "Transcription complete");
 
       if (!fullText) {
@@ -90,23 +106,6 @@ router.post(
         res.setHeader("Content-Disposition", `attachment; filename="subtitled-video.mp4"`);
         res.send(originalBuffer);
         return;
-      }
-
-      // If translation requested, use a chat model to translate to English
-      if (translate === "english") {
-        req.log.info("Translating transcript to English");
-        const translationResponse = await openai.chat.completions.create({
-          model: "gpt-5-mini",
-          messages: [
-            {
-              role: "system",
-              content: "You are a professional translator. Translate the given text to English. Output ONLY the translated text, nothing else. Keep the same line breaks and sentence structure as the original.",
-            },
-            { role: "user", content: fullText },
-          ],
-        });
-        fullText = translationResponse.choices[0]?.message?.content?.trim() ?? fullText;
-        req.log.info({ chars: fullText.length }, "Translation complete");
       }
 
       // Split into subtitle lines and estimate timing
@@ -156,12 +155,28 @@ router.post(
       ].join(",");
 
       const escapedSrtPath = srtPath.replace(/\\/g, "\\\\").replace(/'/g, "\\'").replace(/:/g, "\\:");
-      const subtitleFilter = `subtitles='${escapedSrtPath}':force_style='${forceStyle}'`;
+      const subtitleFilter = `subtitles=filename='${escapedSrtPath}':force_style='${forceStyle}'`;
 
       req.log.info({ subtitleFilter }, "Burning subtitles into video");
-      await execAsync(
-        `ffmpeg -i "${inputPath}" -vf "${subtitleFilter}" -c:v libx264 -crf 23 -preset fast -c:a copy "${outputPath}" -y`,
-        { maxBuffer: 1024 * 1024 * 50 }
+      await execFileAsync(
+        "ffmpeg",
+        [
+          "-i",
+          inputPath,
+          "-vf",
+          subtitleFilter,
+          "-c:v",
+          "libx264",
+          "-crf",
+          "23",
+          "-preset",
+          "fast",
+          "-c:a",
+          "copy",
+          outputPath,
+          "-y",
+        ],
+        { maxBuffer: 1024 * 1024 * 50 },
       );
 
       const outputBuffer = await fs.readFile(outputPath);
@@ -173,7 +188,19 @@ router.post(
     } catch (err) {
       req.log.error({ err }, "Subtitle processing failed");
       if (!res.headersSent) {
-        res.status(500).json({ error: "Failed to process video. Please try again." });
+        const message = err instanceof Error ? err.message : "Failed to process video. Please try again.";
+
+        if (message.includes("[MISSING_MEDIA_TOOL]")) {
+          res.status(500).json({
+            error: "FFmpeg/ffprobe is not installed or not in PATH. Install FFmpeg and restart the API server.",
+          });
+        } else if (message.includes("[MISSING_FASTER_WHISPER]")) {
+          res.status(500).json({
+            error: message.replace("[MISSING_FASTER_WHISPER] ", ""),
+          });
+        } else {
+          res.status(500).json({ error: "Failed to process video. Please try again." });
+        }
       }
     } finally {
       fs.rm(tmpDir, { recursive: true, force: true }).catch((e) => {
@@ -182,6 +209,75 @@ router.post(
     }
   }
 );
+
+
+async function burnSubtitlesWithFallback(
+  inputPath: string,
+  subtitleFilter: string,
+  srtPath: string,
+  outputPath: string,
+  log: { info: (obj: unknown, msg: string) => void; warn: (obj: unknown, msg: string) => void },
+): Promise<void> {
+  try {
+    await execFileAsync(
+      "ffmpeg",
+      [
+        "-i",
+        inputPath,
+        "-vf",
+        subtitleFilter,
+        "-c:v",
+        "libx264",
+        "-crf",
+        "23",
+        "-preset",
+        "fast",
+        "-c:a",
+        "copy",
+        outputPath,
+        "-y",
+      ],
+      { maxBuffer: 1024 * 1024 * 50 },
+    );
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+
+    if (!message.includes("No such filter: 'subtitles'")) {
+      throw err;
+    }
+
+    log.warn(
+      { message },
+      "FFmpeg build does not include the subtitles filter. Falling back to embedding subtitles track (mov_text).",
+    );
+
+    await execFileAsync(
+      "ffmpeg",
+      [
+        "-i",
+        inputPath,
+        "-i",
+        srtPath,
+        "-map",
+        "0",
+        "-map",
+        "1:0",
+        "-c",
+        "copy",
+        "-c:s",
+        "mov_text",
+        outputPath,
+        "-y",
+      ],
+      { maxBuffer: 1024 * 1024 * 50 },
+    );
+
+    log.info(
+      {},
+      "Subtitles were embedded as a selectable track because burn-in filter is unavailable in the current FFmpeg build.",
+    );
+  }
+}
 
 function splitIntoSubtitleLines(text: string, maxWords: number): string[] {
   const sentences = text.match(/[^.!?]+[.!?]*/g) ?? [text];

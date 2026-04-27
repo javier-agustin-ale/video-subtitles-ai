@@ -183,9 +183,9 @@ export default function Home() {
                     <span className="font-semibold text-sm">Keep Original</span>
                     <span className="text-xs text-muted-foreground mt-0.5">Subtitles in spoken language</span>
                   </OptionCard>
-                  <OptionCard id="translate-english" value="english" current={translate}>
+                  <OptionCard id="translate-english" value="english" current={translate} disabled>
                     <span className="font-semibold text-sm">Translate to English</span>
-                    <span className="text-xs text-muted-foreground mt-0.5">Auto-translate any language</span>
+                    <span className="text-xs text-muted-foreground mt-0.5">Premium feature • Coming soon</span>
                   </OptionCard>
                 </RadioGroup>
               </OptionGroup>
@@ -323,13 +323,13 @@ function OptionGroup({ icon, label, children }: { icon: React.ReactNode; label: 
   );
 }
 
-function OptionCard({ id, value, current, children }: { id: string; value: string; current: string; children: React.ReactNode }) {
+function OptionCard({ id, value, current, children, disabled = false }: { id: string; value: string; current: string; children: React.ReactNode; disabled?: boolean }) {
   return (
     <div className="flex-1 flex flex-col">
-      <RadioGroupItem value={value} id={id} className="peer sr-only" />
+      <RadioGroupItem value={value} id={id} disabled={disabled} className="peer sr-only" />
       <Label
         htmlFor={id}
-        className="flex flex-col items-center justify-center p-3 border rounded-md cursor-pointer hover:bg-muted/30 peer-data-[state=checked]:border-primary peer-data-[state=checked]:bg-primary/5 transition-all text-center h-full min-h-[72px]"
+        className={`flex flex-col items-center justify-center p-3 border rounded-md transition-all text-center h-full min-h-[72px] ${disabled ? "cursor-not-allowed opacity-60" : "cursor-pointer hover:bg-muted/30 peer-data-[state=checked]:border-primary peer-data-[state=checked]:bg-primary/5"}`}
       >
         {children}
       </Label>
